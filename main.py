@@ -1,96 +1,147 @@
 import os
-import csv
-import tensorflow as tf
+import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
+# machine learning
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
-def getAverages(test_file_path, features):
-    avrg = []
-    with open(test_file_path, 'r') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for feature in features:
-            count = 0
-            total = 0
-            for row in reader:
-                try:
-                    total += float(row[feature])
-                except ValueError:
-                    continue
-                count += 1
-            if count == 0:
-                avrg.append({feature: 0})
-                continue
-            avrg.append({feature: round(total/count, 1)})
-    return avrg[0]
+# directories
+data_dir = 'datasets'
+
+def loadData(data_dir):
+    train_df = pd.read_csv(os.path.join(data_dir, 'train.csv'))
+    test_df = pd.read_csv(os.path.join(data_dir, 'test.csv'))
+    return train_df, test_df
+
+def dropData(df, columns_dropped):
+    return df.drop(columns_dropped, axis=1)
+
+def procAge(train_df, test_df):
+    # get average, std, and number of NaN values
+    train_age_avg = train_df['Age'].mean()
+    train_age_std = train_df['Age'].std()
+    train_age_nan_count = train_df['Age'].isnull().sum()
     
-def getFeatures(test_file_path, features, feature_averages):
-    x = []
-    with open(test_file_path, 'r') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            new_data = []
-            for feature in features:
-                    if feature == 'Sex':
-                        new_data.append(0 if row['Sex'] == 'female' else 1)
-                    elif feature == 'Embarked':
-                        new_data.append(0 if row['Embarked'] == 'C' else 1 if row['Embarked'] == 'Q' else 2)
-                    else:
-                        try:
-                            temp = float(row[feature])
-                            new_data.append(temp)
-                        except ValueError:
-                            new_data.append(feature_averages[feature])
-            x.append(new_data)
-    return x
-
-dataset_dir = 'datasets' # Folder containing data sets
-save_dir = 'saved_model' # Folder containing trained model
-features = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Embarked', 'Survived']
-
-
-if __name__=='__main__':    
-    # Get feature average to substitute for missing samples
-    feature_averages = getAverages(os.path.join(dataset_dir, 'train.csv'), ['Age'])
+    test_age_avg = test_df['Age'].mean()
+    test_age_std = test_df['Age'].std()
+    test_age_nan_count = test_df['Age'].isnull().sum()
     
-    # Import training data
-    data = getFeatures(os.path.join(dataset_dir, 'train.csv'), features, feature_averages)
-    trX = np.array(data)[:, 0:6]
-    trY = np.array(data)[:, 6:7]
-
-    # Create the model
-    feature_size = len(features)-1
-    x = tf.placeholder(tf.float32, [None, feature_size])
-    W = tf.Variable(tf.zeros([feature_size, 1]), name='W')
-    b = tf.Variable(tf.zeros([1]), name='b')
-    y = tf.matmul(x, W) + b
-    y_ = tf.placeholder(tf.float32, [None, 1])
+    # generate random numbers between (mean - std) & (mean + std)
+    train_rand = np.random.randint(train_age_avg - train_age_std, 
+                                   train_age_avg + train_age_avg,
+                                   size=train_age_nan_count)
+    test_rand = np.random.randint(test_age_avg - test_age_std,
+                                  test_age_avg + test_age_std,
+                                  size=test_age_nan_count)
     
-    # Define loss function and optimizer with L2 Regularization
-    beta = 0.01
-    L2regularizer = tf.nn.l2_loss(W)
-    cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=y_, logits=y) + beta*L2regularizer) 
-    train_step = tf.train.GradientDescentOptimizer(0.5).minimize(cross_entropy)
+    # fill NaN values in Age column with random values generated
+    train_df['Age'][np.isnan(train_df['Age'])] = train_rand
+    test_df['Age'][np.isnan(test_df['Age'])] = test_rand
+    
+    return train_df, test_df
+
+def procEmbarked(train_df, test_df):
+    # fill the 2 missing values with the most occured value, 'S'
+    train_df['Embarked'] = train_df['Embarked'].fillna('S')
+#     sns.countplot(x='Embarked', data=train_df)
+#     sns.countplot(x='Survived', hue="Embarked", data=train_df, order=[1,0])
+    # actually, drop embarked since logically it is relevant in prediction
+#     train_df = train_df.drop(['Embarked'], axis=1)
+#     test_df = test_df.drop(['Embarked'], axis=1)
+
+    # choose to include Embarked: make dummies
+    embarked_dummies_train = pd.get_dummies(train_df['Embarked'])
+    embarked_dummies_train.columns = ['C', 'Q', 'S']
+    train_df = train_df.join(embarked_dummies_train)
+    embarked_dummies_test = pd.get_dummies(test_df['Embarked'])
+    embarked_dummies_test.columns = ['C', 'Q', 'S']
+    test_df = test_df.join(embarked_dummies_test)
+    
+    train_df = train_df.drop(['Embarked'], axis=1)
+    test_df = test_df.drop(['Embarked'], axis=1)
+    
+    return train_df, test_df
+
+def procFare(train_df, test_df):
+    # fill the missing fare value in test.csv using mean value
+    test_df['Fare'].fillna(test_df['Fare'].median(), inplace=True)
+    # convert from float to intpd
+#     train_df = train_df['Fare'].astype(int)
+#     test_df = test_df['Fare'].astype(int)
+    return train_df, test_df
+
+def procSex(train_df, test_df):
+    # create dummy variables
+    person_dummies_train = pd.get_dummies(train_df['Sex'])
+    person_dummies_train.columns = ['Female','Male']
+    person_dummies_test = pd.get_dummies(test_df['Sex'])
+    person_dummies_test.columns = ['Female','Male']
+    train_df = train_df.join(person_dummies_train)
+    test_df = test_df.join(person_dummies_test)
+    
+    # and drop the Sex column
+    train_df = train_df.drop(['Sex'], axis=1)
+    test_df = test_df.drop(['Sex'], axis=1)
+    
+    return train_df, test_df
+
+def procPclass(train_df, test_df):
+    # create dummy variables
+    pclass_dummy_train = pd.get_dummies(train_df['Pclass'])
+    pclass_dummy_train.columns = ['Class_1', 'Class_2', 'Class_3']
+    pclass_dummy_test = pd.get_dummies(test_df['Pclass'])
+    pclass_dummy_test.columns = ['Class_1', 'Class_2', 'Class_3']
+    train_df = train_df.join(pclass_dummy_train)
+    test_df = test_df.join(pclass_dummy_test)
+    
+    # and drop the PClass column
+    train_df = train_df.drop(['Pclass'], axis=1)
+    test_df = test_df.drop(['Pclass'], axis=1)
+    
+    return train_df, test_df
+
+if __name__=='__main__':
+    # import data
+    train_df, test_df = loadData(data_dir)
+    print(train_df.info())
+    print(test_df.info())
+    print('-------------------------')
+    
+    # drop unnecessary columns that are not useful in prediction
+    train_df = dropData(train_df, ['PassengerId', 'Name', 'Ticket', 'Cabin'])
+    test_df = dropData(test_df, ['Name', 'Ticket', 'Cabin'])
+
+    # Processing each remaining feature
+    train_df, test_df = procAge(train_df, test_df)
+    train_df, test_df = procEmbarked(train_df, test_df)
+    train_df, test_df = procFare(train_df, test_df)
+    train_df, test_df = procSex(train_df, test_df)
+    train_df, test_df = procPclass(train_df, test_df)
+    
+    # show plot and data
+    print(train_df.info())
+    print(test_df.info())
+    plt.show()
+    
+    # do machine learning
+    X_train = train_df.drop("Survived",axis=1)
+    Y_train = train_df["Survived"]
+    X_test  = test_df.drop("PassengerId",axis=1).copy()
      
-    sess = tf.InteractiveSession()
-    tf.global_variables_initializer().run()
-    saver = tf.train.Saver()
-
-    # Train
-    for step in range(1000):
-#         print("Step", step)
-        sess.run(train_step, feed_dict={x: trX, y_: trY})
+    # Logistic Regression
+    logreg = LogisticRegression()
+    logreg.fit(X_train, Y_train)
+    print("Logistic Regression:", logreg.score(X_train, Y_train))
+    Y_pred = logreg.predict(X_test)
+#     # Random Forests
+#     random_forest = RandomForestClassifier(n_estimators=100)
+#     random_forest.fit(X_train, Y_train)
+#     Y_pred = random_forest.predict(X_test)
+#     print("Random Forest:", random_forest.score(X_train, Y_train))
      
-    # Save trained model
-#     saver.save(sess, os.path.join(save_dir, 'trained_model'))
-     
-    # Test trained model
-    correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-    print("Training accuracy:", sess.run(accuracy, feed_dict={x: trX, y_: trY}))
-    
-    # Import test data
-    data = getFeatures(os.path.join(dataset_dir, 'test.csv'), features[:-1], feature_averages)
-    teX = np.array(data)
-    
-    # Test
-    print("Test result:", sess.run(y, feed_dict={x: trX}))
+    # output to csv file
+    submission = pd.DataFrame({'PassengerId': test_df['PassengerId'],
+                               'Survived': Y_pred})
+    submission.to_csv(os.path.join(data_dir, 'submission.csv'), index=False)
